@@ -1,3 +1,7 @@
+# SAM 3D - Low memory
+
+Trades GPU memory for a bit of speed, and CPU memory. Works on a 12 GB RTX 3060, running mostly on GPU with a bit of the mesh decoding moved to CPU.
+
 # SAM 3D
 
 SAM 3D Objects is one part of SAM 3D, a pair of models for object and human mesh reconstruction.  If you’re looking for SAM 3D Body, [click here](https://github.com/facebookresearch/sam-3d-body).

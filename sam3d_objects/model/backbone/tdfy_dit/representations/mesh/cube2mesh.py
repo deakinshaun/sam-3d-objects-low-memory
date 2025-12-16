@@ -57,6 +57,8 @@ class SparseFeatures2Mesh:
         a model to generate a mesh from sparse features structures using flexicube
         """
         super().__init__()
+        device="cpu" # move this to cpu, minor speed reduction, but quite a bit of GPU memory saved.
+        
         self.device = device
         self.res = res
         self.mesh_extractor = FlexiCubes(device=device)

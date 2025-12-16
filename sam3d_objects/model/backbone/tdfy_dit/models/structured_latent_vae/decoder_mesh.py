@@ -186,6 +186,8 @@ class SLatMeshDecoder(SparseTransformerBase):
             h = block(h)
         h = h.type(x.dtype)
         h = self.out_layer(h)
+        
+        h = h.cpu () # this part runs on cpu.
         return self.to_representation(h)
 
 

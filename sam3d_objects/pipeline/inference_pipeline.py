@@ -144,20 +144,34 @@ class InferencePipeline:
             ss_encoder = self.init_ss_encoder(
                 ss_encoder_config_path, ss_encoder_ckpt_path
             )
+            slat_decoder_gs = None
             slat_decoder_gs = self.init_slat_decoder_gs(
                 slat_decoder_gs_config_path, slat_decoder_gs_ckpt_path
             )
-            slat_decoder_gs_4 = self.init_slat_decoder_gs(
-                slat_decoder_gs_4_config_path, slat_decoder_gs_4_ckpt_path
-            )
-            slat_decoder_mesh = self.init_slat_decoder_mesh(
-                slat_decoder_mesh_config_path, slat_decoder_mesh_ckpt_path
-            )
+            self.slat_decoder_gs_config_path = slat_decoder_gs_config_path
+            self.slat_decoder_gs_ckpt_path = slat_decoder_gs_ckpt_path
+            slat_decoder_gs_4 = None
+            # Not used at the moment.
+            # slat_decoder_gs_4 = self.init_slat_decoder_gs(
+            #     slat_decoder_gs_4_config_path, slat_decoder_gs_4_ckpt_path
+            # )
+            self.slat_decoder_gs_4_config_path = slat_decoder_gs_4_config_path
+            self.slat_decoder_gs_4_ckpt_path = slat_decoder_gs_4_ckpt_path
+            
+            # Delay initialization until some other elements are swapped out.
+            slat_decoder_mesh = None
+            # slat_decoder_mesh = self.init_slat_decoder_mesh(
+            #     slat_decoder_mesh_config_path, slat_decoder_mesh_ckpt_path
+            # )
+            self.slat_decoder_mesh_config_path = slat_decoder_mesh_config_path
+            self.slat_decoder_mesh_ckpt_path = slat_decoder_mesh_ckpt_path
 
             # Load conditioner embedder so that we only load it once
+            ss_condition_embedder = None
             ss_condition_embedder = self.init_ss_condition_embedder(
                 ss_generator_config_path, ss_generator_ckpt_path
             )
+            slat_condition_embedder = None
             slat_condition_embedder = self.init_slat_condition_embedder(
                 slat_generator_config_path, slat_generator_ckpt_path
             )
@@ -316,7 +330,8 @@ class InferencePipeline:
             config,
             os.path.join(self.workspace_dir, ss_generator_ckpt_path),
             state_dict_fn=state_dict_prefix_func,
-            device=self.device,
+            device="cpu", # Start with ss_generator in CPU memory.
+            # device=self.device,
         )
 
     def init_slat_generator(self, slat_generator_config_path, slat_generator_ckpt_path):
@@ -330,7 +345,8 @@ class InferencePipeline:
             config,
             os.path.join(self.workspace_dir, slat_generator_ckpt_path),
             state_dict_fn=state_dict_prefix_func,
-            device=self.device,
+            device="cpu", # Start in CPU memory
+            # device=self.device,
         )
 
     def init_ss_encoder(self, ss_encoder_config_path, ss_encoder_ckpt_path):
@@ -344,7 +360,8 @@ class InferencePipeline:
             return self.instantiate_and_load_from_pretrained(
                 config,
                 os.path.join(self.workspace_dir, ss_encoder_ckpt_path),
-                device=self.device,
+                device="cpu", # Start in CPU memory.
+                # device=self.device,
                 state_dict_key=None,
             )
         else:
@@ -360,7 +377,8 @@ class InferencePipeline:
         return self.instantiate_and_load_from_pretrained(
             config,
             os.path.join(self.workspace_dir, ss_decoder_ckpt_path),
-            device=self.device,
+            device="cpu", # Start in CPU memory.
+            # device=self.device,
             state_dict_key=None,
         )
 
@@ -387,7 +405,8 @@ class InferencePipeline:
                 os.path.join(self.workspace_dir, slat_decoder_mesh_config_path)
             ),
             os.path.join(self.workspace_dir, slat_decoder_mesh_ckpt_path),
-            device=self.device,
+            device="cpu",
+            # device=self.device,
             state_dict_key=None,
         )
 
@@ -404,7 +423,8 @@ class InferencePipeline:
                 state_dict_fn=filter_and_remove_prefix_state_dict_fn(
                     "_base_models.condition_embedder."
                 ),
-                device=self.device,
+                device="cpu", # Start by allocating in CPU memory.
+                # device=self.device,
             )
         else:
             return None
@@ -605,10 +625,20 @@ class InferencePipeline:
         """
         logger.info("Decoding sparse latent...")
         ret = {}
+        
+        if self.models["slat_decoder_mesh"] == None:
+            self.models["slat_decoder_mesh"] = self.init_slat_decoder_mesh(
+                    self.slat_decoder_mesh_config_path, self.slat_decoder_mesh_ckpt_path
+                )
+
         with torch.no_grad():
             if "mesh" in formats:
+                slat = slat.cuda ()
+                self.models["slat_decoder_mesh"] = self.models["slat_decoder_mesh"].cuda ();
                 ret["mesh"] = self.models["slat_decoder_mesh"](slat)
+                self.models["slat_decoder_mesh"] = self.models["slat_decoder_mesh"].cpu ();
             if "gaussian" in formats:
+                slat = slat.cuda ()
                 ret["gaussian"] = self.models["slat_decoder_gs"](slat)
             if "gaussian_4" in formats:
                 ret["gaussian_4"] = self.models["slat_decoder_gs_4"](slat)
@@ -680,20 +710,40 @@ class InferencePipeline:
                 else:
                     latent_shape_dict = (bs,) + (4096, 8)
 
+                # Swap ss_condition_embedder to GPU
+                self.condition_embedders["ss_condition_embedder"] = self.condition_embedders["ss_condition_embedder"].cuda ()
+                
                 condition_args, condition_kwargs = self.get_condition_input(
                     self.condition_embedders["ss_condition_embedder"],
                     ss_input_dict,
                     self.ss_condition_input_mapping,
                 )
+                
+                # Move ss_condition_embedder back to CPU when not in use.
+                self.condition_embedders["ss_condition_embedder"] = self.condition_embedders["ss_condition_embedder"].cpu ()
+
+                # Bring ss_generator into GPU memory.
+                self.models["ss_generator"] = self.models["ss_generator"].cuda ()
+                ss_generator = self.models["ss_generator"]
+                
                 return_dict = ss_generator(
                     latent_shape_dict,
                     image.device,
                     *condition_args,
                     **condition_kwargs,
                 )
+
+                # Swap ss_generator back to CPU memory.
+                self.models["ss_generator"] = self.models["ss_generator"].cpu ()
+                ss_generator = self.models["ss_generator"]                
+                
                 if not self.is_mm_dit():
                     return_dict = {"shape": return_dict}
 
+                # Swap to GPU
+                self.models["ss_decoder"] = self.models["ss_decoder"].cuda ()
+                ss_decoder = self.models["ss_decoder"]
+                
                 shape_latent = return_dict["shape"]
                 ss = ss_decoder(
                     shape_latent.permute(0, 2, 1)
@@ -701,6 +751,9 @@ class InferencePipeline:
                     .view(shape_latent.shape[0], 8, 16, 16, 16)
                 )
                 coords = torch.argwhere(ss > 0)[:, [0, 2, 3, 4]].int()
+                # Swap back to CPU
+                self.models["ss_decoder"] = self.models["ss_decoder"].cpu ()
+                ss_decoder = self.models["ss_decoder"]
 
                 # downsample output
                 return_dict["coords_original"] = coords
@@ -751,15 +804,24 @@ class InferencePipeline:
 
         with torch.autocast(device_type="cuda", dtype=self.dtype):
             with torch.no_grad():
+                self.condition_embedders["slat_condition_embedder"] = self.condition_embedders["slat_condition_embedder"].cuda () # Swap to GPU
                 condition_args, condition_kwargs = self.get_condition_input(
                     self.condition_embedders["slat_condition_embedder"],
                     slat_input,
                     self.slat_condition_input_mapping,
                 )
+                self.condition_embedders["slat_condition_embedder"] = self.condition_embedders["slat_condition_embedder"].cpu () # Swap back to CPU
+                
                 condition_args += (coords.cpu().numpy(),)
+                
+                self.models["slat_generator"] = self.models["slat_generator"].cuda () # Swap to GPU
+                slat_generator = self.models["slat_generator"]
                 slat = slat_generator(
                     latent_shape, DEVICE, *condition_args, **condition_kwargs
                 )
+                self.models["slat_generator"] = self.models["slat_generator"].cpu () # Swap to CPU
+                slat_generator = self.models["slat_generator"]
+                
                 slat = sp.SparseTensor(
                     coords=coords,
                     feats=slat[0],
